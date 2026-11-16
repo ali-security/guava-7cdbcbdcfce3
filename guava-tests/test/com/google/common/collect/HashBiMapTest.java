@@ -17,6 +17,7 @@
 package com.google.common.collect;
 
 import static com.google.common.collect.Maps.immutableEntry;
+import static com.google.common.collect.ReflectionFreeAssertThrows.assertThrows;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.annotations.GwtCompatible;
@@ -35,6 +36,7 @@ import junit.framework.Test;
 import junit.framework.TestCase;
 import junit.framework.TestSuite;
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Tests for {@link HashBiMap}.
@@ -66,6 +68,30 @@ public class HashBiMapTest extends TestCase {
     suite.addTest(
         BiMapTestSuiteBuilder.using(new HashBiMapGenerator())
             .named("HashBiMap")
+            .withFeatures(
+                CollectionSize.ANY,
+                CollectionFeature.SERIALIZABLE,
+                CollectionFeature.SUPPORTS_ITERATOR_REMOVE,
+                CollectionFeature.KNOWN_ORDER,
+                MapFeature.ALLOWS_NULL_KEYS,
+                MapFeature.ALLOWS_NULL_VALUES,
+                MapFeature.ALLOWS_ANY_NULL_QUERIES,
+                MapFeature.GENERAL_PURPOSE)
+            .createTestSuite());
+    suite.addTest(
+        BiMapTestSuiteBuilder.using(
+                new TestStringBiMapGenerator() {
+                  @Override
+                  protected BiMap<String, String> create(Entry<String, String>[] entries) {
+                    HashBiMap<String, String> result = HashBiMap.create();
+                    result.convertToHashFloodingResistantImplementation();
+                    for (Entry<String, String> entry : entries) {
+                      result.put(entry.getKey(), entry.getValue());
+                    }
+                    return result;
+                  }
+                })
+            .named("HashBiMap with flooding resistance")
             .withFeatures(
                 CollectionSize.ANY,
                 CollectionFeature.SERIALIZABLE,
@@ -126,137 +152,367 @@ public class HashBiMapTest extends TestCase {
     }
   }
 
+  private static <K extends @Nullable Object, V extends @Nullable Object>
+      ImmutableList<HashBiMap<K, V>> createBiMaps() {
+    HashBiMap<K, V> flooded = HashBiMap.create();
+    flooded.convertToHashFloodingResistantImplementation();
+    return ImmutableList.of(HashBiMap.create(), flooded);
+  }
+
   public void testBiMapEntrySetIteratorRemove() {
-    BiMap<Integer, String> map = HashBiMap.create();
-    map.put(1, "one");
-    Set<Entry<Integer, String>> entries = map.entrySet();
-    Iterator<Entry<Integer, String>> iterator = entries.iterator();
-    Entry<Integer, String> entry = iterator.next();
-    entry.setValue("two"); // changes the iterator's current entry value
-    assertEquals("two", map.get(1));
-    assertEquals(Integer.valueOf(1), map.inverse().get("two"));
-    iterator.remove(); // removes the updated entry
-    assertTrue(map.isEmpty());
+    for (BiMap<Integer, String> map : HashBiMapTest.<Integer, String>createBiMaps()) {
+      map.put(1, "one");
+      Set<Entry<Integer, String>> entries = map.entrySet();
+      Iterator<Entry<Integer, String>> iterator = entries.iterator();
+      Entry<Integer, String> entry = iterator.next();
+      entry.setValue("two"); // changes the iterator's current entry value
+      assertEquals("two", map.get(1));
+      assertEquals(Integer.valueOf(1), map.inverse().get("two"));
+      iterator.remove(); // removes the updated entry
+      assertTrue(map.isEmpty());
+    }
   }
 
   public void testInsertionOrder() {
-    BiMap<String, Integer> map = HashBiMap.create();
-    map.put("foo", 1);
-    map.put("bar", 2);
-    map.put("quux", 3);
-    assertThat(map.entrySet())
-        .containsExactly(
-            immutableEntry("foo", 1), immutableEntry("bar", 2), immutableEntry("quux", 3))
-        .inOrder();
+    for (BiMap<String, Integer> map : HashBiMapTest.<String, Integer>createBiMaps()) {
+      map.put("foo", 1);
+      map.put("bar", 2);
+      map.put("quux", 3);
+      assertThat(map.entrySet())
+          .containsExactly(
+              immutableEntry("foo", 1), immutableEntry("bar", 2), immutableEntry("quux", 3))
+          .inOrder();
+    }
   }
 
   public void testInsertionOrderAfterRemoveFirst() {
-    BiMap<String, Integer> map = HashBiMap.create();
-    map.put("foo", 1);
-    map.put("bar", 2);
-    map.put("quux", 3);
+    for (BiMap<String, Integer> map : HashBiMapTest.<String, Integer>createBiMaps()) {
+      map.put("foo", 1);
+      map.put("bar", 2);
+      map.put("quux", 3);
 
-    map.remove("foo");
-    assertThat(map.entrySet())
-        .containsExactly(immutableEntry("bar", 2), immutableEntry("quux", 3))
-        .inOrder();
+      map.remove("foo");
+      assertThat(map.entrySet())
+          .containsExactly(immutableEntry("bar", 2), immutableEntry("quux", 3))
+          .inOrder();
+    }
   }
 
   public void testInsertionOrderAfterRemoveMiddle() {
-    BiMap<String, Integer> map = HashBiMap.create();
-    map.put("foo", 1);
-    map.put("bar", 2);
-    map.put("quux", 3);
+    for (BiMap<String, Integer> map : HashBiMapTest.<String, Integer>createBiMaps()) {
+      map.put("foo", 1);
+      map.put("bar", 2);
+      map.put("quux", 3);
 
-    map.remove("bar");
-    assertThat(map.entrySet())
-        .containsExactly(immutableEntry("foo", 1), immutableEntry("quux", 3))
-        .inOrder();
+      map.remove("bar");
+      assertThat(map.entrySet())
+          .containsExactly(immutableEntry("foo", 1), immutableEntry("quux", 3))
+          .inOrder();
+    }
   }
 
   public void testInsertionOrderAfterRemoveLast() {
-    BiMap<String, Integer> map = HashBiMap.create();
-    map.put("foo", 1);
-    map.put("bar", 2);
-    map.put("quux", 3);
+    for (BiMap<String, Integer> map : HashBiMapTest.<String, Integer>createBiMaps()) {
+      map.put("foo", 1);
+      map.put("bar", 2);
+      map.put("quux", 3);
 
-    map.remove("quux");
-    assertThat(map.entrySet())
-        .containsExactly(immutableEntry("foo", 1), immutableEntry("bar", 2))
-        .inOrder();
+      map.remove("quux");
+      assertThat(map.entrySet())
+          .containsExactly(immutableEntry("foo", 1), immutableEntry("bar", 2))
+          .inOrder();
+    }
   }
 
   public void testInsertionOrderAfterForcePut() {
-    BiMap<String, Integer> map = HashBiMap.create();
-    map.put("foo", 1);
-    map.put("bar", 2);
-    map.put("quux", 3);
+    for (BiMap<String, Integer> map : HashBiMapTest.<String, Integer>createBiMaps()) {
+      map.put("foo", 1);
+      map.put("bar", 2);
+      map.put("quux", 3);
 
-    map.forcePut("quux", 1);
-    assertThat(map.entrySet())
-        .containsExactly(immutableEntry("bar", 2), immutableEntry("quux", 1))
-        .inOrder();
+      map.forcePut("quux", 1);
+      assertThat(map.entrySet())
+          .containsExactly(immutableEntry("bar", 2), immutableEntry("quux", 1))
+          .inOrder();
+      assertThat(map.inverse().entrySet())
+          .containsExactly(immutableEntry(2, "bar"), immutableEntry(1, "quux"))
+          .inOrder();
+    }
   }
 
   public void testInsertionOrderAfterInverseForcePut() {
-    BiMap<String, Integer> map = HashBiMap.create();
-    map.put("foo", 1);
-    map.put("bar", 2);
-    map.put("quux", 3);
+    for (BiMap<String, Integer> map : HashBiMapTest.<String, Integer>createBiMaps()) {
+      map.put("foo", 1);
+      map.put("bar", 2);
+      map.put("quux", 3);
 
-    map.inverse().forcePut(1, "quux");
-    assertThat(map.entrySet())
-        .containsExactly(immutableEntry("bar", 2), immutableEntry("quux", 1))
-        .inOrder();
+      map.inverse().forcePut(1, "quux");
+      assertThat(map.entrySet())
+          .containsExactly(immutableEntry("bar", 2), immutableEntry("quux", 1))
+          .inOrder();
+    }
   }
 
   public void testInverseInsertionOrderAfterInverse() {
-    BiMap<String, Integer> map = HashBiMap.create();
-    map.put("bar", 2);
-    map.put("quux", 1);
+    for (BiMap<String, Integer> map : HashBiMapTest.<String, Integer>createBiMaps()) {
+      map.put("bar", 2);
+      map.put("quux", 1);
 
-    assertThat(map.inverse().entrySet())
-        .containsExactly(immutableEntry(2, "bar"), immutableEntry(1, "quux"))
-        .inOrder();
+      assertThat(map.inverse().entrySet())
+          .containsExactly(immutableEntry(2, "bar"), immutableEntry(1, "quux"))
+          .inOrder();
+    }
   }
 
   public void testInverseInsertionOrderAfterInverseForcePut() {
-    BiMap<String, Integer> map = HashBiMap.create();
-    map.put("foo", 1);
-    map.put("bar", 2);
-    map.put("quux", 3);
+    for (BiMap<String, Integer> map : HashBiMapTest.<String, Integer>createBiMaps()) {
+      map.put("foo", 1);
+      map.put("bar", 2);
+      map.put("quux", 3);
 
-    map.inverse().forcePut(1, "quux");
-    assertThat(map.inverse().entrySet())
-        .containsExactly(immutableEntry(2, "bar"), immutableEntry(1, "quux"))
-        .inOrder();
+      map.inverse().forcePut(1, "quux");
+      assertThat(map.inverse().entrySet())
+          .containsExactly(immutableEntry(2, "bar"), immutableEntry(1, "quux"))
+          .inOrder();
+    }
   }
 
   public void testInverseInsertionOrderAfterInverseForcePutPresentKey() {
-    BiMap<String, Integer> map = HashBiMap.create();
-    map.put("foo", 1);
-    map.put("bar", 2);
-    map.put("quux", 3);
-    map.put("nab", 4);
+    for (BiMap<String, Integer> map : HashBiMapTest.<String, Integer>createBiMaps()) {
+      map.put("foo", 1);
+      map.put("bar", 2);
+      map.put("quux", 3);
+      map.put("nab", 4);
 
-    map.inverse().forcePut(4, "bar");
-    assertThat(map.entrySet())
-        .containsExactly(
-            immutableEntry("foo", 1), immutableEntry("bar", 4), immutableEntry("quux", 3))
-        .inOrder();
+      map.inverse().forcePut(4, "bar");
+      assertThat(map.entrySet())
+          .containsExactly(
+              immutableEntry("foo", 1), immutableEntry("bar", 4), immutableEntry("quux", 3))
+          .inOrder();
+      assertThat(map.inverse().entrySet())
+          .containsExactly(
+              immutableEntry(1, "foo"), immutableEntry(4, "bar"), immutableEntry(3, "quux"))
+          .inOrder();
+    }
   }
 
   public void testInverseEntrySetValueNewKey() {
-    BiMap<Integer, String> map = HashBiMap.create();
-    map.put(1, "a");
-    map.put(2, "b");
-    Iterator<Entry<String, Integer>> inverseEntryItr = map.inverse().entrySet().iterator();
-    Entry<String, Integer> entry = inverseEntryItr.next();
-    entry.setValue(3);
-    assertEquals(immutableEntry("b", 2), inverseEntryItr.next());
-    assertFalse(inverseEntryItr.hasNext());
-    assertThat(map.entrySet())
-        .containsExactly(immutableEntry(2, "b"), immutableEntry(3, "a"))
+    for (BiMap<Integer, String> map : HashBiMapTest.<Integer, String>createBiMaps()) {
+      map.put(1, "a");
+      map.put(2, "b");
+      Iterator<Entry<String, Integer>> inverseEntryItr = map.inverse().entrySet().iterator();
+      Entry<String, Integer> entry = inverseEntryItr.next();
+      entry.setValue(3);
+      assertEquals(immutableEntry("b", 2), inverseEntryItr.next());
+      assertFalse(inverseEntryItr.hasNext());
+      assertThat(map.entrySet())
+          .containsExactly(immutableEntry(2, "b"), immutableEntry(3, "a"))
+          .inOrder();
+    }
+  }
+
+  public void testPutCollidingKeysTriggersFlooding() {
+    HashBiMap<Object, Integer> map = HashBiMap.create();
+    for (int i = 0; i < 20; i++) {
+      map.put(new ConstantHashObject(i), i);
+    }
+    assertThat(map.isUsingHashFloodingResistance()).isTrue();
+    for (int i = 0; i < 20; i++) {
+      assertThat(map.get(new ConstantHashObject(i))).isEqualTo(i);
+      assertThat(map.inverse().get(i)).isEqualTo(new ConstantHashObject(i));
+    }
+  }
+
+  public void testPutCollidingValuesTriggersFlooding() {
+    HashBiMap<Integer, Object> map = HashBiMap.create();
+    for (int i = 0; i < 20; i++) {
+      map.put(i, new ConstantHashObject(i));
+    }
+    assertThat(map.isUsingHashFloodingResistance()).isTrue();
+    for (int i = 0; i < 20; i++) {
+      assertThat(map.get(i)).isEqualTo(new ConstantHashObject(i));
+      assertThat(map.inverse().get(new ConstantHashObject(i))).isEqualTo(i);
+    }
+  }
+
+  public void testEntrySetSetValueTriggersFlooding() {
+    HashBiMap<Integer, Object> map = HashBiMap.create();
+    for (int i = 0; i < 20; i++) {
+      map.put(i, "orig-" + i);
+    }
+    assertThat(map.isUsingHashFloodingResistance()).isFalse();
+
+    for (Iterator<Entry<Integer, Object>> it = map.entrySet().iterator(); it.hasNext(); ) {
+      Entry<Integer, Object> entry = it.next();
+      int key = entry.getKey();
+      assertThat(entry.setValue(new ConstantHashObject(key))).isEqualTo("orig-" + key);
+      if (key == 15) {
+        it.remove();
+        assertThrows(NullPointerException.class, () -> entry.setValue("after-remove"));
+      }
+    }
+    assertThat(map.isUsingHashFloodingResistance()).isTrue();
+
+    ImmutableBiMap.Builder<Integer, Object> expectedBuilder = ImmutableBiMap.builder();
+    for (int i = 0; i < 20; i++) {
+      if (i != 15) {
+        expectedBuilder.put(i, new ConstantHashObject(i));
+      }
+    }
+    ImmutableBiMap<Integer, Object> expected = expectedBuilder.buildOrThrow();
+    assertThat(map.entrySet()).containsExactlyElementsIn(expected.entrySet()).inOrder();
+    assertThat(map.inverse().entrySet())
+        .containsExactlyElementsIn(expected.inverse().entrySet())
         .inOrder();
+  }
+
+  public void testInverseEntrySetSetValueTriggersFlooding() {
+    HashBiMap<Object, Integer> map = HashBiMap.create();
+    for (int i = 0; i < 20; i++) {
+      map.put("orig-" + i, i);
+    }
+    assertThat(map.isUsingHashFloodingResistance()).isFalse();
+
+    for (Iterator<Entry<Integer, Object>> it = map.inverse().entrySet().iterator();
+        it.hasNext(); ) {
+      Entry<Integer, Object> entry = it.next();
+      int value = entry.getKey();
+      assertThat(entry.setValue(new ConstantHashObject(value))).isEqualTo("orig-" + value);
+    }
+    assertThat(map.isUsingHashFloodingResistance()).isTrue();
+
+    ImmutableBiMap.Builder<Object, Integer> expectedBuilder = ImmutableBiMap.builder();
+    for (int i = 0; i < 20; i++) {
+      expectedBuilder.put(new ConstantHashObject(i), i);
+    }
+    ImmutableBiMap<Object, Integer> expected = expectedBuilder.buildOrThrow();
+    assertThat(map.entrySet()).containsExactlyElementsIn(expected.entrySet()).inOrder();
+    assertThat(map.inverse().entrySet())
+        .containsExactlyElementsIn(expected.inverse().entrySet())
+        .inOrder();
+  }
+
+  // replaceAll here is clear() followed by put() of each replacement, so on failure the entries
+  // already re-put (keys 0-14, which overflowed a bucket and switched to the flooding-resistant
+  // tables) stay in the map and the remaining ones are dropped.
+  public void testReplaceAllTriggersFloodingAndThrows() {
+    HashBiMap<Integer, Object> map = HashBiMap.create();
+    for (int i = 0; i < 20; i++) {
+      map.put(i, "orig-" + i);
+    }
+    assertThat(map.isUsingHashFloodingResistance()).isFalse();
+
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            map.replaceAll(
+                (k, v) -> {
+                  if (k < 15) {
+                    return new ConstantHashObject(k);
+                  }
+                  throw new IllegalStateException();
+                }));
+    assertThat(map.isUsingHashFloodingResistance()).isTrue();
+    assertReplacedPrefix(map);
+  }
+
+  public void testReplaceAllTriggersFloodingAndDuplicateValue() {
+    HashBiMap<Integer, Object> map = HashBiMap.create();
+    for (int i = 0; i < 20; i++) {
+      map.put(i, "orig-" + i);
+    }
+    assertThat(map.isUsingHashFloodingResistance()).isFalse();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            map.replaceAll(
+                (k, v) -> {
+                  if (k < 15) {
+                    return new ConstantHashObject(k);
+                  }
+                  return new ConstantHashObject(0);
+                }));
+    assertThat(map.isUsingHashFloodingResistance()).isTrue();
+    assertReplacedPrefix(map);
+  }
+
+  public void testInverseReplaceAllTriggersFloodingAndThrows() {
+    HashBiMap<Object, Integer> map = HashBiMap.create();
+    for (int i = 0; i < 20; i++) {
+      map.put("orig-" + i, i);
+    }
+    assertThat(map.isUsingHashFloodingResistance()).isFalse();
+
+    BiMap<Integer, Object> inverse = map.inverse();
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            inverse.replaceAll(
+                (v, k) -> {
+                  if (v < 15) {
+                    return new ConstantHashObject(v);
+                  }
+                  throw new IllegalStateException();
+                }));
+    assertThat(map.isUsingHashFloodingResistance()).isTrue();
+    assertReplacedPrefix(map.inverse());
+  }
+
+  public void testInverseReplaceAllTriggersFloodingAndDuplicateKey() {
+    HashBiMap<Object, Integer> map = HashBiMap.create();
+    for (int i = 0; i < 20; i++) {
+      map.put("orig-" + i, i);
+    }
+    assertThat(map.isUsingHashFloodingResistance()).isFalse();
+
+    BiMap<Integer, Object> inverse = map.inverse();
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            inverse.replaceAll(
+                (v, k) -> {
+                  if (v < 15) {
+                    return new ConstantHashObject(v);
+                  }
+                  return new ConstantHashObject(0);
+                }));
+    assertThat(map.isUsingHashFloodingResistance()).isTrue();
+    assertReplacedPrefix(map.inverse());
+  }
+
+  /** Asserts {@code map} holds exactly i -> ConstantHashObject(i) for i < 15, in order. */
+  private static void assertReplacedPrefix(BiMap<Integer, Object> map) {
+    ImmutableBiMap.Builder<Integer, Object> expectedBuilder = ImmutableBiMap.builder();
+    for (int i = 0; i < 15; i++) {
+      expectedBuilder.put(i, new ConstantHashObject(i));
+    }
+    ImmutableBiMap<Integer, Object> expected = expectedBuilder.buildOrThrow();
+    assertThat(map.entrySet()).containsExactlyElementsIn(expected.entrySet()).inOrder();
+    assertThat(map.inverse().entrySet())
+        .containsExactlyElementsIn(expected.inverse().entrySet())
+        .inOrder();
+    for (int i = 0; i < 15; i++) {
+      assertThat(map.get(i)).isEqualTo(new ConstantHashObject(i));
+      assertThat(map.inverse().get(new ConstantHashObject(i))).isEqualTo(i);
+    }
+  }
+
+  private static final class ConstantHashObject {
+    final int id;
+
+    ConstantHashObject(int id) {
+      this.id = id;
+    }
+
+    @Override
+    public int hashCode() {
+      return 0;
+    }
+
+    @Override
+    public boolean equals(@Nullable Object obj) {
+      return obj instanceof ConstantHashObject && this.id == ((ConstantHashObject) obj).id;
+    }
   }
 }

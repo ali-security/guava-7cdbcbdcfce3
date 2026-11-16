@@ -26,6 +26,7 @@ import static com.google.common.collect.testing.Helpers.mapEntry;
 import static com.google.common.collect.testing.IteratorFeature.MODIFIABLE;
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.Arrays.asList;
+import static java.util.Objects.requireNonNull;
 
 import com.google.common.annotations.GwtCompatible;
 import com.google.common.annotations.GwtIncompatible;
@@ -38,6 +39,7 @@ import com.google.common.collect.testing.google.SetMultimapTestSuiteBuilder;
 import com.google.common.collect.testing.google.TestStringSetMultimapGenerator;
 import com.google.common.testing.EqualsTester;
 import com.google.common.testing.SerializableTester;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
@@ -87,6 +89,36 @@ public class LinkedHashMultimapTest extends TestCase {
                 CollectionFeature.SERIALIZABLE,
                 CollectionSize.ANY)
             .createTestSuite());
+    suite.addTest(
+        SetMultimapTestSuiteBuilder.using(
+                new TestStringSetMultimapGenerator() {
+                  @Override
+                  protected SetMultimap<String, String> create(Entry<String, String>[] entries) {
+                    LinkedHashMultimap<String, String> multimap = LinkedHashMultimap.create();
+                    for (Entry<String, String> entry : entries) {
+                      multimap.put(entry.getKey(), entry.getValue());
+                      LinkedHashMultimap<?, ?>.ValueSet valueSet =
+                          (LinkedHashMultimap.ValueSet)
+                              requireNonNull(multimap.backingMap().get(entry.getKey()));
+                      if (valueSet.delegateOrNull() == null) {
+                        valueSet.convertToHashFloodingResistantImplementation();
+                      }
+                    }
+                    return multimap;
+                  }
+                })
+            .named("LinkedHashMultimap with flooding resistance")
+            .withFeatures(
+                MapFeature.ALLOWS_NULL_KEYS,
+                MapFeature.ALLOWS_NULL_VALUES,
+                MapFeature.ALLOWS_ANY_NULL_QUERIES,
+                MapFeature.GENERAL_PURPOSE,
+                MapFeature.FAILS_FAST_ON_CONCURRENT_MODIFICATION,
+                CollectionFeature.SUPPORTS_ITERATOR_REMOVE,
+                CollectionFeature.KNOWN_ORDER,
+                CollectionFeature.SERIALIZABLE,
+                CollectionSize.ANY)
+            .createTestSuite());
     suite.addTestSuite(LinkedHashMultimapTest.class);
     return suite;
   }
@@ -98,13 +130,56 @@ public class LinkedHashMultimapTest extends TestCase {
       // The Eclipse compiler (and hence GWT) rejects a parameterized cast.
       @SuppressWarnings("unchecked")
       LinkedHashMultimap<String, Integer>.ValueSet valueSet =
-          (LinkedHashMultimap.ValueSet) multimap.backingMap().get("a");
+          (LinkedHashMultimap.ValueSet) requireNonNull(multimap.backingMap().get("a"));
       assertEquals(z, valueSet.size());
       assertFalse(
           Hashing.needsResizing(
               valueSet.size(),
-              valueSet.hashTable.length,
+              requireNonNull(valueSet.hashTableArray()).length,
               LinkedHashMultimap.VALUE_SET_LOAD_FACTOR));
+    }
+  }
+
+  public void testValueSetCollidingValuesTriggersFlooding() {
+    LinkedHashMultimap<String, Object> multimap = LinkedHashMultimap.create();
+    List<Object> expectedValues = new ArrayList<>();
+    for (int i = 0; i < 20; i++) {
+      ConstantHashObject value = new ConstantHashObject(i);
+      expectedValues.add(value);
+      assertTrue(multimap.put("a", value));
+      assertFalse(multimap.put("a", new ConstantHashObject(i)));
+    }
+    // The Eclipse compiler (and hence GWT) rejects a parameterized cast.
+    @SuppressWarnings("unchecked")
+    LinkedHashMultimap<String, Object>.ValueSet valueSet =
+        (LinkedHashMultimap.ValueSet) requireNonNull(multimap.backingMap().get("a"));
+    assertThat(valueSet.delegateOrNull()).isNotNull();
+    assertThat(multimap.get("a")).containsExactlyElementsIn(expectedValues).inOrder();
+    for (int i = 0; i < 20; i++) {
+      assertTrue(multimap.containsEntry("a", new ConstantHashObject(i)));
+    }
+    assertTrue(multimap.remove("a", new ConstantHashObject(5)));
+    assertFalse(multimap.containsEntry("a", new ConstantHashObject(5)));
+    expectedValues.remove(5);
+    assertThat(multimap.get("a")).containsExactlyElementsIn(expectedValues).inOrder();
+    assertThat(multimap.values()).containsExactlyElementsIn(expectedValues).inOrder();
+  }
+
+  private static final class ConstantHashObject {
+    final int id;
+
+    ConstantHashObject(int id) {
+      this.id = id;
+    }
+
+    @Override
+    public int hashCode() {
+      return 0;
+    }
+
+    @Override
+    public boolean equals(@Nullable Object obj) {
+      return obj instanceof ConstantHashObject && this.id == ((ConstantHashObject) obj).id;
     }
   }
 

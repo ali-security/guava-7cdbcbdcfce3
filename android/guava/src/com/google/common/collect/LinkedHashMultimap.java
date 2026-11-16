@@ -33,6 +33,7 @@ import java.io.ObjectOutputStream;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.ConcurrentModificationException;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -253,6 +254,18 @@ public final class LinkedHashMultimap<K extends @Nullable Object, V extends @Nul
   private static final int DEFAULT_VALUE_SET_CAPACITY = 2;
   @VisibleForTesting static final double VALUE_SET_LOAD_FACTOR = 1.0;
 
+  /**
+   * Maximum allowed false positive probability of detecting a hash flooding attack given random
+   * input.
+   */
+  @VisibleForTesting static final double HASH_FLOODING_FPP = 0.001;
+
+  /**
+   * Maximum allowed length of a hash table bucket before falling back to a j.u.HashMap-based
+   * implementation. Experimentally determined.
+   */
+  private static final int MAX_HASH_BUCKET_LENGTH = 9;
+
   @VisibleForTesting transient int valueSetCapacity = DEFAULT_VALUE_SET_CAPACITY;
   private transient ValueEntry<K, V> multimapHeaderEntry;
 
@@ -356,7 +369,13 @@ public final class LinkedHashMultimap<K extends @Nullable Object, V extends @Nul
      */
 
     @ParametricNullness private final K key;
-    @VisibleForTesting @Nullable ValueEntry<K, V>[] hashTable;
+
+    /*
+     * Either a `@Nullable ValueEntry<K, V>[]` or, if hash flooding has been detected, a `Map<V,
+     * ValueEntry<K, V>>`.
+     */
+    private Object hashTable;
+
     private int size = 0;
     private int modCount = 0;
 
@@ -377,8 +396,55 @@ public final class LinkedHashMultimap<K extends @Nullable Object, V extends @Nul
       this.hashTable = hashTable;
     }
 
-    private int mask() {
-      return hashTable.length - 1;
+    // The only place we put a Map in is convertToHashFloodingResistantImplementation.
+    @SuppressWarnings("unchecked")
+    @VisibleForTesting
+    @Nullable Map<V, ValueEntry<K, V>> delegateOrNull() {
+      if (hashTable instanceof Map) {
+        return (Map<V, ValueEntry<K, V>>) hashTable;
+      }
+      return null;
+    }
+
+    // The only places we put an array in are the constructor and rehashIfNecessary.
+    @SuppressWarnings("unchecked")
+    @VisibleForTesting
+    @Nullable ValueEntry<K, V>[] hashTableArray() {
+      return (@Nullable ValueEntry<K, V>[]) hashTable;
+    }
+
+    @VisibleForTesting
+    void convertToHashFloodingResistantImplementation() {
+      Map<V, ValueEntry<K, V>> newDelegate = new HashMap<>(hashTableArray().length, 1.0f);
+      for (ValueSetLink<K, V> entry = firstEntry;
+          entry != this;
+          entry = entry.getSuccessorInValueSet()) {
+        ValueEntry<K, V> valueEntry = (ValueEntry<K, V>) entry;
+        newDelegate.put(valueEntry.getValue(), valueEntry);
+        valueEntry.nextInValueBucket = null;
+      }
+      this.hashTable = newDelegate;
+    }
+
+    private void deleteEntryExceptFromHashTable(ValueEntry<K, V> entry) {
+      deleteFromValueSet(entry);
+      deleteFromMultimap(entry);
+      size--;
+      modCount++;
+    }
+
+    private ValueEntry<K, V> addEntryExceptToHashTable(
+        @ParametricNullness V value,
+        int smearedHash,
+        @Nullable ValueEntry<K, V> nextInValueBucket) {
+      ValueEntry<K, V> newEntry = new ValueEntry<>(key, value, smearedHash, nextInValueBucket);
+      succeedsInValueSet(lastEntry, newEntry);
+      succeedsInValueSet(newEntry, this);
+      succeedsInMultimap(multimapHeaderEntry.getPredecessorInMultimap(), newEntry);
+      succeedsInMultimap(newEntry, multimapHeaderEntry);
+      size++;
+      modCount++;
+      return newEntry;
     }
 
     @Override
@@ -451,8 +517,14 @@ public final class LinkedHashMultimap<K extends @Nullable Object, V extends @Nul
 
     @Override
     public boolean contains(@Nullable Object o) {
+      Map<V, ValueEntry<K, V>> delegate = delegateOrNull();
+      if (delegate != null) {
+        return delegate.containsKey(o);
+      }
+
+      @Nullable ValueEntry<K, V>[] hashTable = hashTableArray();
       int smearedHash = Hashing.smearedHash(o);
-      for (ValueEntry<K, V> entry = hashTable[smearedHash & mask()];
+      for (ValueEntry<K, V> entry = hashTable[smearedHash & (hashTable.length - 1)];
           entry != null;
           entry = entry.nextInValueBucket) {
         if (entry.matchesValue(o, smearedHash)) {
@@ -465,31 +537,44 @@ public final class LinkedHashMultimap<K extends @Nullable Object, V extends @Nul
     @Override
     public boolean add(@ParametricNullness V value) {
       int smearedHash = Hashing.smearedHash(value);
-      int bucket = smearedHash & mask();
+
+      Map<V, ValueEntry<K, V>> delegate = delegateOrNull();
+      if (delegate != null) {
+        if (delegate.containsKey(value)) {
+          return false;
+        }
+        ValueEntry<K, V> newEntry =
+            addEntryExceptToHashTable(value, smearedHash, /* nextInValueBucket= */ null);
+        delegate.put(value, newEntry);
+        return true;
+      }
+
+      @Nullable ValueEntry<K, V>[] hashTable = hashTableArray();
+      int mask = hashTable.length - 1;
+      int bucket = smearedHash & mask;
       ValueEntry<K, V> rowHead = hashTable[bucket];
+      int bucketLength = 0;
       for (ValueEntry<K, V> entry = rowHead; entry != null; entry = entry.nextInValueBucket) {
         if (entry.matchesValue(value, smearedHash)) {
           return false;
         }
+        bucketLength++;
       }
 
-      ValueEntry<K, V> newEntry = new ValueEntry<>(key, value, smearedHash, rowHead);
-      succeedsInValueSet(lastEntry, newEntry);
-      succeedsInValueSet(newEntry, this);
-      succeedsInMultimap(multimapHeaderEntry.getPredecessorInMultimap(), newEntry);
-      succeedsInMultimap(newEntry, multimapHeaderEntry);
-      hashTable[bucket] = newEntry;
-      size++;
-      modCount++;
-      rehashIfNecessary();
+      hashTable[bucket] = addEntryExceptToHashTable(value, smearedHash, rowHead);
+      if (bucketLength >= MAX_HASH_BUCKET_LENGTH) {
+        convertToHashFloodingResistantImplementation();
+      } else {
+        rehashIfNecessary(hashTable);
+      }
       return true;
     }
 
-    private void rehashIfNecessary() {
-      if (Hashing.needsResizing(size, hashTable.length, VALUE_SET_LOAD_FACTOR)) {
+    private void rehashIfNecessary(@Nullable ValueEntry<K, V>[] oldHashTable) {
+      if (Hashing.needsResizing(size, oldHashTable.length, VALUE_SET_LOAD_FACTOR)) {
         @SuppressWarnings("unchecked")
-        ValueEntry<K, V>[] hashTable =
-            (ValueEntry<K, V>[]) new ValueEntry<?, ?>[this.hashTable.length * 2];
+        @Nullable ValueEntry<K, V>[] hashTable =
+            (@Nullable ValueEntry<K, V>[]) new ValueEntry<?, ?>[oldHashTable.length * 2];
         this.hashTable = hashTable;
         int mask = hashTable.length - 1;
         for (ValueSetLink<K, V> entry = firstEntry;
@@ -506,8 +591,19 @@ public final class LinkedHashMultimap<K extends @Nullable Object, V extends @Nul
     @CanIgnoreReturnValue
     @Override
     public boolean remove(@Nullable Object o) {
+      Map<V, ValueEntry<K, V>> delegate = delegateOrNull();
+      if (delegate != null) {
+        ValueEntry<K, V> entry = delegate.remove(o);
+        if (entry != null) {
+          deleteEntryExceptFromHashTable(entry);
+          return true;
+        }
+        return false;
+      }
+
+      @Nullable ValueEntry<K, V>[] hashTable = hashTableArray();
       int smearedHash = Hashing.smearedHash(o);
-      int bucket = smearedHash & mask();
+      int bucket = smearedHash & (hashTable.length - 1);
       ValueEntry<K, V> prev = null;
       for (ValueEntry<K, V> entry = hashTable[bucket];
           entry != null;
@@ -519,10 +615,7 @@ public final class LinkedHashMultimap<K extends @Nullable Object, V extends @Nul
           } else {
             prev.nextInValueBucket = entry.nextInValueBucket;
           }
-          deleteFromValueSet(entry);
-          deleteFromMultimap(entry);
-          size--;
-          modCount++;
+          deleteEntryExceptFromHashTable(entry);
           return true;
         }
       }
@@ -531,7 +624,12 @@ public final class LinkedHashMultimap<K extends @Nullable Object, V extends @Nul
 
     @Override
     public void clear() {
-      Arrays.fill(hashTable, null);
+      Map<V, ValueEntry<K, V>> delegate = delegateOrNull();
+      if (delegate != null) {
+        delegate.clear();
+      } else {
+        Arrays.fill(hashTableArray(), null);
+      }
       size = 0;
       for (ValueSetLink<K, V> entry = firstEntry;
           entry != this;
